@@ -1,0 +1,21 @@
+{
+  "weibo": {
+    "user_id": "你的微博用户ID",
+    "cookie": "你的Cookie字符串",
+    "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Weibo (iPhone13,2__weibo__13.0.0__iphone__os17.0)"
+  },
+  "crawler": {
+    "concurrent_requests": 5,
+    "concurrent_downloads": 20,
+    "request_delay": 1.0,
+    "retry_times": 3,
+    "timeout": 30
+  },
+  "storage": {
+    "database_path": "data/weibo.db",
+    "images_dir": "data/images",
+    "videos_dir": "data/videos",
+    "output_dir": "data/output"
+  }
+}
+
