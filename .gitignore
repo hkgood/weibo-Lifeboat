@@ -85,3 +85,12 @@ dmypy.json
 .env
 .env.local
 
+# PyInstaller
+build/
+dist/
+*.spec.bak
+dmg_temp/
+*.dmg
+*.exe
+*.app
+

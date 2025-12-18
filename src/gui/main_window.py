@@ -554,7 +554,7 @@ class MainWindow(QMainWindow):
             self._config = ensure_config_shape({})
             if not best_effort:
                 dialog = CustomMessageDialog("无法加载配置", f"读取失败：{e}", [("确定", "PrimaryButton")], self)
-            dialog.exec()
+                dialog.exec()
 
         # Populate form controls
         self.ed_user_id.setText(str(get_nested(self._config, ["weibo", "user_id"], "")))
@@ -618,7 +618,11 @@ class MainWindow(QMainWindow):
 
     def _open_cookie_login(self) -> None:
         # Lazy import to avoid paying WebEngine startup cost unless user actually needs it.
-        from .cookie_login import CookieLoginDialog  # noqa: WPS433
+        # 使用原生 WebView（优先）或回退到旧的 WebEngine 实现
+        try:
+            from .cookie_login_native import CookieLoginDialog  # noqa: WPS433
+        except Exception:
+            from .cookie_login import CookieLoginDialog  # noqa: WPS433
 
         dlg = CookieLoginDialog(self)
         if dlg.exec() != dlg.DialogCode.Accepted:  # type: ignore[attr-defined]

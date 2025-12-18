@@ -39,6 +39,21 @@
 
 ![微博逃生舱界面](screenshots/screenshots.png)
 
+### 📥 下载使用
+
+#### 方式一：直接下载（推荐）
+
+从 [Releases](../../releases) 页面下载适合你系统的版本：
+
+- **macOS**: 下载 `.dmg` 文件，双击安装即可
+- **Windows**: 下载 `.exe` 或 `.zip` 文件，解压后运行
+
+无需安装 Python 环境，开箱即用！
+
+#### 方式二：从源码运行（开发者）
+
+见下方"安装步骤"部分。
+
 ### 📦 系统要求
 
 - **Python**: 3.9 或更高版本
@@ -106,23 +121,7 @@ cp config.example.json config.json
 
 ### 🚀 使用方法
 
-#### 快速启动（推荐）
-
-```bash
-# macOS/Linux 用户可以直接运行
-./start.sh
-
-# Windows 用户需要先激活虚拟环境
-.venv\Scripts\activate
-python run_gui.py
-```
-
-启动脚本会自动：
-- ✅ 检查并创建虚拟环境
-- ✅ 安装所需依赖
-- ✅ 启动图形界面
-
-#### 方式一：图形界面
+#### 方式一：图形界面（推荐）
 
 ```bash
 python run_gui.py
@@ -256,6 +255,19 @@ A: 本工具不提供删除功能，仅用于备份。如需删除微博，请�
 
 A: 所有数据存储在 `data/` 目录下，包括数据库、图片、视频和生成的 HTML 文件。
 
+**Q: macOS 打包后的 App 无法运行怎么办？**
+
+A: 如果遇到 "Incompatible processor" 或 "neon crc32" 错误，需要更新 PySide6 版本：
+
+```bash
+source .venv/bin/activate
+pip uninstall -y PySide6 PySide6-Addons PySide6-Essentials shiboken6
+pip install PySide6  # 安装最新版本 (6.10.1+)
+./build_macos.sh     # 重新打包
+```
+
+这个问题通常发生在 Apple Silicon (M1/M2/M3) Mac 上，PySide6 6.7.3 版本存在兼容性问题。
+
 ### 🔐 隐私与安全
 
 - **本地运行**：所有数据处理在本地完成，不上传到任何服务器
@@ -302,6 +314,21 @@ Built with modern asynchronous architecture · Beautiful macOS native GUI and CL
 ### 📸 Screenshots
 
 ![Weibo Lifeboat Interface](screenshots/screenshots.png)
+
+### 📥 Download
+
+#### Option 1: Direct Download (Recommended)
+
+Download the version for your system from [Releases](../../releases):
+
+- **macOS**: Download `.dmg` file, double-click to install
+- **Windows**: Download `.exe` or `.zip` file, extract and run
+
+No Python installation required - ready to use out of the box!
+
+#### Option 2: Run from Source (Developers)
+
+See "Installation" section below.
 
 ### 📦 Requirements
 
@@ -370,23 +397,7 @@ Edit `config.json` with your Weibo information:
 
 ### 🚀 Usage
 
-#### Quick Start (Recommended)
-
-```bash
-# macOS/Linux users can run directly
-./start.sh
-
-# Windows users need to activate venv first
-.venv\Scripts\activate
-python run_gui.py
-```
-
-The start script will automatically:
-- ✅ Check and create virtual environment
-- ✅ Install required dependencies
-- ✅ Launch the GUI
-
-#### Method 1: GUI
+#### Method 1: GUI (Recommended)
 
 ```bash
 python run_gui.py
