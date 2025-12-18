@@ -1,6 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+
 block_cipher = None
+
+# 根据平台选择图标
+if sys.platform == 'win32':
+    app_icon = 'assets/app_icon.ico'  # Windows 使用 .ico
+elif sys.platform == 'darwin':
+    app_icon = 'assets/app_icon.png'  # macOS 使用 .png（PyInstaller 会转换为 .icns）
+else:
+    app_icon = None  # Linux 不需要图标
 
 # 排除不需要的大型模块
 excludes = [
@@ -107,7 +117,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/app_icon.png',
+    icon=app_icon,  # 使用平台特定的图标
 )
 
 coll = COLLECT(
@@ -125,7 +135,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='WeiboLifeboat.app',
-    icon='assets/app_icon.png',
+    icon=app_icon,  # 使用平台特定的图标
     bundle_identifier='com.weibolifeboat.app',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
