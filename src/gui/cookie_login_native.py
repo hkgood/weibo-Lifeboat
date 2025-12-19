@@ -27,6 +27,7 @@ from .shadow_container import create_shadow_button
 class CapturedCookie:
     cookie: str
     count: int
+    user_id: str = ""  # 从URL中提取的用户ID
 
 
 def _domain_interesting(domain: str) -> bool:
@@ -42,11 +43,15 @@ def _domain_interesting(domain: str) -> bool:
 class MacOSWebViewWidget(QWidget):
     """macOS 原生 WKWebView 嵌入 Qt Widget"""
     
+    url_changed = Signal(str)  # 发射URL变化信号
+    
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.webview = None
         self.cookie_store = None
         self._init_success = False
+        self._navigation_delegate = None
+        self._current_url = ""
         
         # 设置最小尺寸
         self.setMinimumSize(800, 500)
@@ -75,19 +80,46 @@ class MacOSWebViewWidget(QWidget):
         frame = NSMakeRect(0, 0, 800, 600)
         self.webview = WKWebView.alloc().initWithFrame_configuration_(frame, config)
         
-        # 3. 获取 Qt Widget 的原生窗口
+        # 3. 设置导航代理以监控URL变化
+        self._setup_navigation_delegate()
+        
+        # 4. 获取 Qt Widget 的原生窗口
         window_id = int(self.winId())
         
-        # 4. 将 WKWebView 添加到 Qt Widget
+        # 5. 将 WKWebView 添加到 Qt Widget
         ns_view = objc_object(c_void_p=window_id)
         ns_view.addSubview_(self.webview)
         
-        # 5. 加载微博登录页
+        # 6. 加载微博登录页
         url = NSURL.URLWithString_("https://m.weibo.cn")
         request = NSURLRequest.requestWithURL_(url)
         self.webview.loadRequest_(request)
         
+        # 7. 启动定时器监控URL变化（因为WKWebView的代理在PyObjC中不太好用）
+        from PySide6.QtCore import QTimer
+        self._url_timer = QTimer(self)
+        self._url_timer.timeout.connect(self._check_url_change)
+        self._url_timer.start(500)  # 每500ms检查一次
+        
         print("[macOS WebView] ✅ 初始化成功，WKWebView 已嵌入")
+    
+    def _setup_navigation_delegate(self):
+        """设置导航代理（简化版，主要用定时器监控）"""
+        pass  # 使用定时器方案，更简单可靠
+    
+    def _check_url_change(self):
+        """检查URL是否变化"""
+        if not self.webview:
+            return
+        
+        try:
+            current_url = str(self.webview.URL().absoluteString())
+            if current_url != self._current_url:
+                self._current_url = current_url
+                print(f"[macOS WebView] URL变化: {current_url}")
+                self.url_changed.emit(current_url)
+        except Exception as e:
+            pass  # URL获取失败时静默忽略
 
     def resizeEvent(self, event):
         """处理窗口大小变化"""
@@ -127,8 +159,8 @@ class MacOSWebViewWidget(QWidget):
                 pass
 
     def get_cookies(self) -> dict:
-        """获取所有微博相关的 Cookie（通过 JavaScript）"""
-        if not self.webview:
+        """获取所有微博相关的 Cookie（使用原生Cookie Store，包括HttpOnly）"""
+        if not self.webview or not self.cookie_store:
             return {}
         
         cookies = {}
@@ -136,36 +168,43 @@ class MacOSWebViewWidget(QWidget):
         try:
             from Foundation import NSRunLoop, NSDate
             
-            js_code = "document.cookie"
-            result_container = {'result': None, 'done': False}
+            result_container = {'cookies': [], 'done': False}
             
-            def completion_handler(result, error):
-                result_container['result'] = result
+            def completion_handler(all_cookies):
+                """Cookie获取完成回调"""
+                result_container['cookies'] = all_cookies or []
                 result_container['done'] = True
-                if error:
-                    print(f"[macOS WebView] JS 执行错误: {error}")
             
-            # 执行 JavaScript
-            self.webview.evaluateJavaScript_completionHandler_(js_code, completion_handler)
+            # 使用WKWebView的Cookie Store获取所有cookie（包括HttpOnly）
+            self.cookie_store.getAllCookies_(completion_handler)
             
             # 等待结果
             import time
-            timeout = 2.0
+            timeout = 3.0
             start = time.time()
             while not result_container['done'] and (time.time() - start) < timeout:
                 NSRunLoop.currentRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.01))
             
-            # 解析 Cookie 字符串
-            cookie_str = result_container['result']
-            if cookie_str:
-                for item in cookie_str.split(';'):
-                    item = item.strip()
-                    if '=' in item:
-                        name, value = item.split('=', 1)
-                        cookies[name.strip()] = value.strip()
+            # 解析Cookie对象
+            for cookie in result_container['cookies']:
+                try:
+                    domain = str(cookie.domain())
+                    name = str(cookie.name())
+                    value = str(cookie.value())
+                    
+                    # 只保留微博相关的cookie
+                    if 'weibo.cn' in domain or 'weibo.com' in domain or 'sina.com.cn' in domain:
+                        cookies[name] = value
+                        print(f"[macOS WebView] Cookie: {name}={'*' * min(8, len(value))}... (domain={domain})")
+                except Exception as e:
+                    print(f"[macOS WebView] 解析Cookie失败: {e}")
+            
+            print(f"[macOS WebView] 共获取 {len(cookies)} 个微博相关Cookie")
                 
         except Exception as e:
             print(f"[macOS WebView] 获取 Cookie 失败: {e}")
+            import traceback
+            traceback.print_exc()
         
         return cookies
 
@@ -303,6 +342,7 @@ class NativeCookieLoginDialog(QDialog):
         self._captured: Optional[CapturedCookie] = None
         self.webview_widget = None
         self._platform = sys.platform
+        self._extracted_user_id = ""  # 从URL中提取的用户ID
 
         # 检查并创建对应平台的 WebView
         if not self._init_platform_webview():
@@ -316,6 +356,10 @@ class NativeCookieLoginDialog(QDialog):
             return
 
         self._build_ui()
+        
+        # 连接URL变化信号
+        if hasattr(self.webview_widget, 'url_changed'):
+            self.webview_widget.url_changed.connect(self._on_url_changed)
         
         # 启动定时器更新 Cookie 计数
         self._timer = QTimer(self)
@@ -381,13 +425,29 @@ class NativeCookieLoginDialog(QDialog):
         layout.addLayout(bottom)
 
     def _update_cookie_count(self):
-        """更新 Cookie 计数"""
+        """更新 Cookie 计数和用户ID显示"""
         if self.webview_widget:
             try:
                 cookies = self.webview_widget.get_cookies()
-                self.lbl_status.setText(f"Cookie：{len(cookies)}")
+                status_text = f"Cookie：{len(cookies)}"
+                if self._extracted_user_id:
+                    status_text += f" | 用户ID：{self._extracted_user_id}"
+                self.lbl_status.setText(status_text)
             except Exception:
                 pass
+    
+    def _on_url_changed(self, url: str):
+        """处理URL变化，提取用户ID"""
+        import re
+        # 匹配微博用户主页URL
+        # 格式: https://m.weibo.cn/u/1234567890 或 https://m.weibo.cn/profile/1234567890
+        match = re.search(r'/(?:u|profile)/(\d{10,})', url)
+        if match:
+            user_id = match.group(1)
+            if user_id != self._extracted_user_id:
+                self._extracted_user_id = user_id
+                print(f"[Cookie Login] ✅ 从URL提取到用户ID: {user_id}")
+                self._update_cookie_count()  # 更新状态显示
 
     def _capture_cookie(self) -> None:
         """捕获 Cookie"""
@@ -410,7 +470,12 @@ class NativeCookieLoginDialog(QDialog):
             # 格式化 Cookie 字符串
             cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
             
-            self._captured = CapturedCookie(cookie=cookie_str, count=len(cookies))
+            # 包含从URL提取的用户ID
+            self._captured = CapturedCookie(
+                cookie=cookie_str, 
+                count=len(cookies),
+                user_id=self._extracted_user_id
+            )
             self.cookie_captured.emit(self._captured)
             
             self.accept()

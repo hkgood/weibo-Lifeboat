@@ -665,3 +665,80 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 
+def run_pipeline_from_gui(
+    config_path: Path,
+    phases: List[str],
+    stop_after_no_new_pages: int,
+    max_pages: int,
+    detail_batch_size: int,
+    detail_concurrency: int,
+    retweet_threshold: int,
+    antibot_cooldown_seconds: int,
+    antibot_max_cooldowns: int,
+    event_callback: Any,
+    log_callback: Any,
+    should_stop: Any,
+) -> int:
+    """
+    GUI-friendly entry point that runs pipeline in current thread.
+    
+    Args:
+        config_path: Path to config.json
+        phases: List of phases to run (e.g., ["list", "detail", "media", "html"])
+        *: Pipeline configuration parameters
+        event_callback: Function to call with event dict
+        log_callback: Function to call with log strings
+        should_stop: Function that returns True if pipeline should stop
+        
+    Returns:
+        Exit code (0 = success, non-zero = error)
+    """
+    # 首先为当前线程创建并设置event loop（在初始化任何异步组件之前）
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        # 创建自定义事件sink，将事件转发到GUI
+        class GUIEventSink:
+            def emit(self, event: str, **data: Any) -> None:
+                try:
+                    event_callback({"event": event, "data": data, "ts": time.time()})
+                except Exception as e:
+                    log_callback(f"[ERROR] Failed to emit event: {e}")
+            
+            def close(self) -> None:
+                pass
+        
+        cfg = PipelineConfig(
+            stop_after_no_new_pages=max(1, stop_after_no_new_pages),
+            max_pages=(max_pages if max_pages > 0 else None),
+            detail_batch_size=max(1, detail_batch_size),
+            detail_concurrency=max(1, detail_concurrency),
+            retweet_long_comment_threshold=max(1, retweet_threshold),
+            antibot_cooldown_seconds=max(60, antibot_cooldown_seconds),
+            antibot_max_cooldowns=max(1, antibot_max_cooldowns),
+        )
+        
+        events = GUIEventSink()
+        # 现在可以安全地创建 WeiboPipeline，因为 event loop 已经设置好了
+        pipeline = WeiboPipeline(config_path=config_path, pipeline_cfg=cfg, events=events)  # type: ignore
+        
+        # 运行pipeline
+        try:
+            loop.run_until_complete(pipeline.run(phases))
+            return 0
+        finally:
+            loop.close()
+    
+    except Exception as e:
+        log_callback(f"[ERROR] Pipeline execution failed: {e}")
+        import traceback
+        log_callback(traceback.format_exc())
+        try:
+            loop.close()
+        except Exception:
+            pass
+        return 1
+
+
+

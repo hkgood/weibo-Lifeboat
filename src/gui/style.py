@@ -429,6 +429,7 @@ def apply_app_style(app: QApplication) -> Theme:
       background: #FCFCFC;
       font-size: 13px;
       min-height: 26px;
+      min-width: 100px;
     }}
     QPushButton:hover {{
       background: {("#FFFFFF" if not theme.is_dark else "rgba(255,255,255,0.08)")};
@@ -449,6 +450,7 @@ def apply_app_style(app: QApplication) -> Theme:
       font-weight: 600;
       font-size: 13px;
       min-height: 26px;
+      min-width: 100px;
       border-radius: {control_radius}px;
     }}
     QPushButton#PrimaryButton:hover {{
@@ -462,15 +464,16 @@ def apply_app_style(app: QApplication) -> Theme:
     QProgressBar {{
       border: 1px solid {theme.border};
       border-radius: 8px;
-      background: rgba(17,24,39,{18 if theme.is_dark else 5});
+      background: rgba(17,24,39,0.05);
       height: 16px;
       text-align: center;
       color: {theme.text};
       font-size: 11px;
+      font-weight: 500;
     }}
     QProgressBar::chunk {{
       border-radius: 7px;
-      background: {theme.primary_btn};
+      background: rgba(255, 74, 0, 0.25);
     }}
 
     /* Toolbars */

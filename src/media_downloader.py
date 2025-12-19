@@ -29,12 +29,20 @@ class MediaDownloader:
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.videos_dir.mkdir(parents=True, exist_ok=True)
         
-        # 信号量控制并发
-        self.semaphore = asyncio.Semaphore(config.get('concurrent_downloads', 20))
+        # 延迟创建信号量（避免在没有event loop的线程中初始化）
+        self._semaphore = None
+        self._concurrent_downloads = config.get('concurrent_downloads', 20)
         
         logger.info(f"MediaDownloader 初始化完成")
         logger.info(f"图片目录: {self.images_dir}")
         logger.info(f"视频目录: {self.videos_dir}")
+    
+    @property
+    def semaphore(self):
+        """延迟创建信号量，确保在有event loop的上下文中创建"""
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self._concurrent_downloads)
+        return self._semaphore
     
     async def download_file(self, url: str, save_path: Path, retry: int = 3) -> bool:
         """

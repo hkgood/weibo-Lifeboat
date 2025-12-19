@@ -46,6 +46,7 @@ from .config_store import (
     safe_float,
     safe_int,
     set_nested,
+    _ensure_user_config_exists,
 )
 from .pipeline_process import PipelineLaunchSpec, PipelineProcess
 from .sidebar_delegate import SidebarItemDelegate
@@ -139,6 +140,9 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.ColorRole.Window, QColor("#ECECEC"))
         self.setPalette(palette)
 
+        # 确保用户配置文件存在
+        _ensure_user_config_exists()
+        
         self._prefs: AppPrefs = load_prefs()
         self._config_path: Path = Path(self._prefs.last_config_path).expanduser()
         self._config: Dict[str, Any] = {}
@@ -386,7 +390,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(card_crawler)
 
         # Storage card
-        card_storage, cls = self._card("存储与导出", "可以在 Finder 中直接打开输出目录查看生成的 HTML。")
+        card_storage, cls = self._card("存储与导出", "所有数据将保存到您的文档目录中，便于查找和备份。")
         form_storage = QFormLayout()
         form_storage.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form_storage.setHorizontalSpacing(12)
@@ -403,13 +407,24 @@ class MainWindow(QMainWindow):
         form_storage.addRow("输出目录", self.ed_output_dir)
         self._fix_form_label_width(form_storage, [self.ed_db_path, self.ed_images_dir, self.ed_videos_dir, self.ed_output_dir], width=160)
         cls.addLayout(form_storage)
+        
+        # 添加数据目录说明
+        from .config_store import _get_user_data_dir
+        data_dir = _get_user_data_dir()
+        hint_label = QLabel(f"💡 默认数据目录：{data_dir}")
+        hint_label.setObjectName("CardHint")
+        hint_label.setWordWrap(True)
+        cls.addWidget(hint_label)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
+        open_data_container, self.btn_open_data = create_shadow_button("打开数据目录")
+        self.btn_open_data.clicked.connect(self._open_data_dir)  # type: ignore[attr-defined]
         open_output_container, self.btn_open_output = create_shadow_button("打开输出目录")
         self.btn_open_output.clicked.connect(self._open_output_dir)  # type: ignore[attr-defined]
         save_cfg_container, self.btn_save_cfg = create_shadow_button("保存配置")
         self.btn_save_cfg.clicked.connect(self._save_config_from_form)  # type: ignore[attr-defined]
+        btn_row.addWidget(open_data_container)
         btn_row.addWidget(open_output_container)
         btn_row.addStretch(1)
         btn_row.addWidget(save_cfg_container)
@@ -459,6 +474,12 @@ class MainWindow(QMainWindow):
         start_container, self.btn_start = create_shadow_button("开始")
         self.btn_start.setObjectName("PrimaryButton")
         self.btn_start.clicked.connect(self._start_pipeline)  # type: ignore[attr-defined]
+        
+        # Loading动画定时器（用于开始按钮）
+        self._loading_timer = QTimer(self)
+        self._loading_timer.timeout.connect(self._update_loading_animation)
+        self._loading_dots = 0
+        self._original_start_text = "开始"
 
         run_row.addWidget(stop_container)
         run_row.addWidget(start_container)
@@ -468,10 +489,22 @@ class MainWindow(QMainWindow):
         card_prog, clp = self._card("逃生进度", "")
         self.lbl_phase = QLabel("阶段：-")
         self.lbl_phase.setObjectName("CardHint")
-        self.lbl_list = QLabel("列表：-")
-        self.lbl_list.setObjectName("CardHint")
 
         # Progress bars with labels on the left
+        # 列表进度条
+        list_row = QHBoxLayout()
+        list_row.setSpacing(8)
+        lbl_list = QLabel("列表")
+        lbl_list.setObjectName("CardHint")
+        lbl_list.setFixedWidth(40)
+        self.pb_list = QProgressBar()
+        self.pb_list.setFormat("%p%")
+        self.pb_list.setRange(0, 100)
+        self.pb_list.setValue(0)
+        list_row.addWidget(lbl_list)
+        list_row.addWidget(self.pb_list)
+
+        # 详情进度条
         detail_row = QHBoxLayout()
         detail_row.setSpacing(8)
         lbl_detail = QLabel("详情")
@@ -484,6 +517,7 @@ class MainWindow(QMainWindow):
         detail_row.addWidget(lbl_detail)
         detail_row.addWidget(self.pb_detail)
 
+        # 图片进度条
         images_row = QHBoxLayout()
         images_row.setSpacing(8)
         lbl_images = QLabel("图片")
@@ -496,23 +530,10 @@ class MainWindow(QMainWindow):
         images_row.addWidget(lbl_images)
         images_row.addWidget(self.pb_media_images)
 
-        videos_row = QHBoxLayout()
-        videos_row.setSpacing(8)
-        lbl_videos = QLabel("视频")
-        lbl_videos.setObjectName("CardHint")
-        lbl_videos.setFixedWidth(40)
-        self.pb_media_videos = QProgressBar()
-        self.pb_media_videos.setFormat("%p%")
-        self.pb_media_videos.setRange(0, 100)
-        self.pb_media_videos.setValue(0)
-        videos_row.addWidget(lbl_videos)
-        videos_row.addWidget(self.pb_media_videos)
-
         clp.addWidget(self.lbl_phase)
-        clp.addWidget(self.lbl_list)
+        clp.addLayout(list_row)
         clp.addLayout(detail_row)
         clp.addLayout(images_row)
-        clp.addLayout(videos_row)
         layout.addWidget(card_prog)
 
         card_log, cll = self._card("逃生日志", "完整日志（用于诊断）。")
@@ -524,8 +545,9 @@ class MainWindow(QMainWindow):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        clear_container, btn_clear = create_shadow_button("清空")
-        btn_clear.clicked.connect(lambda: self.log_full.setPlainText(""))  # type: ignore[attr-defined]
+        clear_container, self.btn_clear_log = create_shadow_button("清空")
+        self.btn_clear_log.clicked.connect(self._clear_log)  # type: ignore[attr-defined]
+        self.btn_clear_log.setEnabled(False)  # 初始状态：没有日志时不可点击
         btns.addWidget(clear_container)
         cll.addLayout(btns)
 
@@ -608,13 +630,28 @@ class MainWindow(QMainWindow):
             dialog.exec()
             return
         QDesktopServices.openUrl(QUrl(f"https://weibo.cn/{uid}"))
+    
+    def _open_data_dir(self) -> None:
+        """打开数据目录（文档目录下的WeiboLifeboat）"""
+        from .config_store import _get_user_data_dir
+        data_dir = _get_user_data_dir()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(data_dir)))
 
     def _open_output_dir(self) -> None:
         out = self.ed_output_dir.text().strip()
         if not out:
-            return
-        p = (self._config_path.parent / out) if self._config_path else Path(out)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.resolve())))
+            # 如果没有设置，使用默认数据目录
+            from .config_store import _get_user_data_dir
+            out_path = _get_user_data_dir() / "output"
+        else:
+            # 如果是绝对路径，直接使用；否则相对于配置文件目录
+            out_path = Path(out)
+            if not out_path.is_absolute():
+                out_path = self._config_path.parent / out if self._config_path else Path(out)
+        
+        # 确保目录存在
+        out_path.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_path.resolve())))
 
     def _open_cookie_login(self) -> None:
         # Lazy import to avoid paying WebEngine startup cost unless user actually needs it.
@@ -630,14 +667,192 @@ class MainWindow(QMainWindow):
         captured = dlg.captured_cookie()
         if not captured:
             return
-        self._apply_captured_cookie(cookie=captured.cookie, count=int(captured.count))
+        self._apply_captured_cookie(
+            cookie=captured.cookie, 
+            count=int(captured.count),
+            user_id=captured.user_id if hasattr(captured, 'user_id') else ""
+        )
 
-    def _apply_captured_cookie(self, *, cookie: str, count: int) -> None:
+    def _apply_captured_cookie(self, *, cookie: str, count: int, user_id: str = "") -> None:
+        # 更新表单 - 优先使用从URL提取的用户ID
         self.ed_cookie.setPlainText(cookie)
+        
+        if user_id:
+            # 从URL提取到了用户ID，直接使用
+            self.ed_user_id.setText(user_id)
+            self._append_log(f"[ui] 从登录页面URL提取到用户 ID: {user_id}")
+        else:
+            # 尝试从Cookie中提取用户ID（备用方案）
+            extracted_id = self._extract_user_id_from_cookie(cookie)
+            if extracted_id:
+                self.ed_user_id.setText(extracted_id)
+                self._append_log(f"[ui] 从Cookie提取到用户 ID: {extracted_id}")
+            else:
+                self._append_log("[ui] ⚠️ 无法自动提取用户 ID，请手动填写")
+        
         self._append_log(f"[ui] 已获取 Cookie（{count} 项）")
         self._refresh_cookie_preview()
+        
         # Save immediately to reduce accidental loss.
-        self._save_config_from_form()
+        try:
+            self._save_config_from_form()
+            # 显示成功消息
+            if user_id or self.ed_user_id.text().strip():
+                display_id = user_id or self.ed_user_id.text().strip()
+                msg = f"已成功获取并保存 Cookie（{count} 项）\n用户 ID: {display_id}\n\n现在可以返回「开始逃生」页面开始备份了。"
+                buttons = [("确定", "PrimaryButton")]
+            else:
+                msg = f"已成功获取并保存 Cookie（{count} 项）\n\n⚠️ 无法自动提取用户 ID，请手动填写：\n1. 在「用户 ID」字段中输入您的微博用户ID\n2. 或访问您的微博主页，从URL中获取\n   （格式：https://m.weibo.cn/u/1234567890）"
+                buttons = [("打开我的主页", "PrimaryButton"), ("稍后填写", "")]
+            
+            dialog = CustomMessageDialog(
+                "Cookie 获取成功", 
+                msg,
+                buttons,
+                self
+            )
+            result = dialog.exec()
+            
+            # 如果用户选择打开主页
+            if not (user_id or self.ed_user_id.text().strip()) and dialog.get_result() == 0:
+                QDesktopServices.openUrl(QUrl("https://m.weibo.cn/profile/me"))
+                
+        except Exception as e:
+            # 显示错误但不重启应用
+            dialog = CustomMessageDialog(
+                "保存配置失败", 
+                f"Cookie 已获取但保存失败：{e}\n\n请检查配置文件路径是否可写。",
+                [("确定", "PrimaryButton")],
+                self
+            )
+            dialog.exec()
+    
+    def _extract_user_id_from_cookie(self, cookie: str) -> str:
+        """从Cookie中提取用户ID
+        
+        微博Cookie中的SUB字段包含用户ID信息，格式为base64编码
+        """
+        try:
+            # 解析Cookie字符串
+            cookies_dict = {}
+            for item in cookie.split(';'):
+                item = item.strip()
+                if '=' in item:
+                    key, value = item.split('=', 1)
+                    cookies_dict[key.strip()] = value.strip()
+            
+            # 方法1: 从SUB字段提取（最可靠）
+            if 'SUB' in cookies_dict:
+                import base64
+                try:
+                    # SUB格式: _2A25...（base64编码，包含用户ID）
+                    sub_value = cookies_dict['SUB']
+                    # 尝试解码（微博SUB是特殊编码，这里尝试提取数字部分）
+                    decoded = base64.b64decode(sub_value + '==')  # 添加padding
+                    # 从解码结果中提取数字（用户ID通常是数字）
+                    import re
+                    numbers = re.findall(r'\d{10,}', decoded.decode('latin1', errors='ignore'))
+                    if numbers:
+                        return numbers[0]
+                except Exception:
+                    pass
+            
+            # 方法2: 从MLOGIN字段提取
+            if 'MLOGIN' in cookies_dict:
+                try:
+                    mlogin = cookies_dict['MLOGIN']
+                    # MLOGIN格式通常是: 1; uid=用户ID
+                    import re
+                    match = re.search(r'uid[=:](\d+)', mlogin, re.IGNORECASE)
+                    if match:
+                        return match.group(1)
+                except Exception:
+                    pass
+            
+            # 方法3: 尝试通过API获取当前用户信息
+            # 这需要使用httpx发送请求
+            self._append_log("[ui] 尝试通过API获取用户 ID...")
+            user_id = self._fetch_user_id_from_api(cookie, cookies_dict.get('User-Agent', ''))
+            if user_id:
+                return user_id
+                
+        except Exception as e:
+            self._append_log(f"[ui] 提取用户 ID 失败: {e}")
+        
+        return ""
+    
+    def _fetch_user_id_from_api(self, cookie: str, user_agent: str) -> str:
+        """通过微博API获取当前登录用户的ID"""
+        try:
+            import httpx
+            
+            headers = {
+                'Cookie': cookie,
+                'User-Agent': user_agent or 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+                'Referer': 'https://m.weibo.cn/',
+            }
+            
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                # 方法1: 访问 /api/config 接口
+                try:
+                    resp = client.get('https://m.weibo.cn/api/config', headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if 'data' in data:
+                            # 检查是否登录
+                            if data['data'].get('login'):
+                                if 'uid' in data['data']:
+                                    uid = str(data['data']['uid'])
+                                    self._append_log(f"[ui] 从API获取到用户 ID: {uid}")
+                                    return uid
+                            else:
+                                self._append_log("[ui] API显示未登录状态，Cookie可能不完整")
+                except Exception as e:
+                    self._append_log(f"[ui] API方法失败: {e}")
+                
+                # 方法2: 访问个人主页 /profile/me，会重定向到真实用户主页
+                try:
+                    resp = client.get('https://m.weibo.cn/profile/me', headers=headers, follow_redirects=True)
+                    if resp.status_code == 200:
+                        # 从重定向URL中提取用户ID
+                        # 格式: https://m.weibo.cn/u/1234567890 或 https://m.weibo.cn/profile/1234567890
+                        final_url = str(resp.url)
+                        self._append_log(f"[ui] 个人主页URL: {final_url}")
+                        import re
+                        match = re.search(r'/(?:u|profile)/(\d+)', final_url)
+                        if match:
+                            uid = match.group(1)
+                            self._append_log(f"[ui] 从个人主页URL提取到用户 ID: {uid}")
+                            return uid
+                        
+                        # 从页面内容中提取
+                        match = re.search(r'"uid"\s*:\s*(\d+)', resp.text)
+                        if match:
+                            uid = match.group(1)
+                            self._append_log(f"[ui] 从个人主页内容提取到用户 ID: {uid}")
+                            return uid
+                except Exception as e:
+                    self._append_log(f"[ui] 个人主页方法失败: {e}")
+                
+                # 方法3: 访问 /api/container/getIndex 接口
+                try:
+                    resp = client.get('https://m.weibo.cn/api/container/getIndex', 
+                                    params={'containerid': '100103type=1'}, 
+                                    headers=headers)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if 'data' in data and 'userInfo' in data['data']:
+                            uid = str(data['data']['userInfo'].get('id', ''))
+                            if uid and uid.isdigit():
+                                self._append_log(f"[ui] 从container接口获取到用户 ID: {uid}")
+                                return uid
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            self._append_log(f"[ui] API获取用户 ID 失败: {e}")
+        
+        return ""
 
     def _refresh_cookie_preview(self) -> None:
         try:
@@ -667,6 +882,20 @@ class MainWindow(QMainWindow):
 
     def _start_pipeline(self) -> None:
         if self._pipeline.is_running():
+            return
+
+        # 检查 Cookie 是否已设置（包括示例文本检查）
+        cookie = self.ed_cookie.toPlainText().strip()
+        if not cookie or cookie in ["你的Cookie字符串", "你的Cookie", "your_cookie_here"]:
+            dialog = CustomMessageDialog(
+                "尚未设置 Cookie", 
+                "您还没有设置 Cookie，无法开始备份。\n\n请先在「逃生设置」页面点击「登录并自动获取 Cookie」按钮来获取 Cookie。",
+                [("前往设置", "PrimaryButton"), ("取消", "")],
+                self
+            )
+            result = dialog.exec()
+            if dialog.get_result() == 0:  # 点击了"前往设置"
+                self.sidebar.setCurrentRow(1)  # 切换到设置页面
             return
 
         self._save_config_from_form()
@@ -700,6 +929,8 @@ class MainWindow(QMainWindow):
         if self._pipeline.is_running():
             self._append_log("[ui] 强制停止（kill）")
             self._pipeline.kill()
+            # 强制停止后立即更新按钮状态
+            self._update_run_buttons()
 
     # ---------------------------
     # Process callbacks
@@ -734,21 +965,158 @@ class MainWindow(QMainWindow):
             self._state.media_videos_done = int(data.get("done") or 0)
             self._state.media_videos_total = int(data.get("total") or 0)
 
-        # Pretty event line
-        try:
-            brief = json.dumps({"event": ev, "data": data}, ensure_ascii=False)
-        except Exception:
-            brief = f"{ev} {data}"
-        self._append_log(brief)
+        # 将事件转换为友好的中文日志
+        friendly_log = self._format_event_friendly(ev, data)
+        if friendly_log:
+            self._append_log(friendly_log)
+        
         self._render_state()
+    
+    def _format_event_friendly(self, event: str, data: Dict[str, Any]) -> str:
+        """将pipeline事件转换为友好的中文日志"""
+        try:
+            # 运行级别事件
+            if event == "run_started":
+                phases = ", ".join(data.get("phases", []))
+                return f"📋 开始备份任务 [{phases}]"
+            elif event == "run_completed":
+                return "✅ 备份任务完成！"
+            
+            # 阶段事件
+            elif event == "phase_started":
+                phase_names = {
+                    "list": "列表抓取",
+                    "detail": "详情抓取", 
+                    "media": "媒体下载",
+                    "html": "HTML生成"
+                }
+                phase = data.get("phase", "")
+                phase_name = phase_names.get(phase, phase)
+                return f"▶️  开始阶段：{phase_name}"
+            elif event == "phase_completed":
+                phase = data.get("phase", "")
+                return f"✓ 完成阶段：{phase}"
+            
+            # 列表抓取事件
+            elif event == "list_started":
+                return f"🔍 开始抓取微博列表（从第{data.get('start_page', 1)}页开始）"
+            elif event == "list_page":
+                page = data.get("page", 0)
+                new_count = data.get("new_count", 0)
+                new_total = data.get("new_total", 0)
+                # 每5页显示一次，避免刷屏
+                if page % 5 == 0 or page == 1:
+                    return f"   第{page}页：新增 {new_count} 条，累计 {new_total} 条"
+                return ""  # 其他页不显示
+            elif event == "list_completed":
+                total = data.get("new_total", 0)
+                last_page = data.get("last_page", 0)
+                return f"✓ 列表抓取完成：共 {last_page} 页，{total} 条微博"
+            elif event == "list_stopped":
+                reason = data.get("reason", "")
+                if reason == "no_data":
+                    return "⚠️  列表抓取停止：未获取到数据"
+                return f"⚠️  列表抓取停止：{reason}"
+            
+            # 详情抓取事件
+            elif event == "detail_batch_started":
+                batch = data.get("batch", 0)
+                total = data.get("total", 0)
+                return f"   批次 {batch}：准备抓取 {total} 条详情"
+            elif event == "detail_batch_progress":
+                done = data.get("done", 0)
+                total = data.get("total", 0)
+                if done % 20 == 0 or done == total:  # 每20条显示一次
+                    return f"   进度：{done}/{total} ({done*100//total if total>0 else 0}%)"
+                return ""
+            elif event == "detail_completed":
+                total = data.get("total_done", 0)
+                batches = data.get("batches", 0)
+                return f"✓ 详情抓取完成：{batches} 个批次，共 {total} 条"
+            elif event == "detail_stopped":
+                reason = data.get("reason", "")
+                if reason == "antibot_max_cooldowns":
+                    return "⚠️  详情抓取停止：触发反爬虫次数过多，已自动停止"
+                elif reason == "zero_success":
+                    return "⚠️  详情抓取停止：本批次无成功更新"
+                return f"⚠️  详情抓取停止：{reason}"
+            
+            # 反爬虫事件
+            elif event == "antibot_triggered":
+                phase_names = {
+                    "list": "列表抓取",
+                    "detail": "详情抓取",
+                    "media": "媒体下载"
+                }
+                phase = data.get("phase", "")
+                phase_name = phase_names.get(phase, phase)
+                cooldowns = data.get("cooldowns", 0)
+                max_cooldowns = data.get("max_cooldowns", 3)
+                cooldown_seconds = data.get("cooldown_seconds", 1800)
+                cooldown_minutes = cooldown_seconds // 60
+                
+                return (f"⚠️  触发反爬虫机制（{phase_name}）\n"
+                       f"   将等待 {cooldown_minutes} 分钟后自动继续... "
+                       f"({cooldowns}/{max_cooldowns} 次)")
+            
+            # 媒体下载事件
+            elif event == "media_images_progress":
+                done = data.get("done", 0)
+                total = data.get("total", 0)
+                if done % 10 == 0 or done == total:  # 每10个显示一次
+                    return f"   图片：{done}/{total} ({done*100//total if total>0 else 0}%)"
+                return ""
+            elif event == "media_images_completed":
+                total = data.get("total", 0)
+                return f"✓ 图片下载完成：共 {total} 张"
+            elif event == "media_videos_progress":
+                done = data.get("done", 0)
+                total = data.get("total", 0)
+                if done % 5 == 0 or done == total:  # 每5个显示一次
+                    return f"   视频：{done}/{total} ({done*100//total if total>0 else 0}%)"
+                return ""
+            elif event == "media_videos_completed":
+                total = data.get("total", 0)
+                return f"✓ 视频下载完成：共 {total} 个"
+            
+            # HTML生成（通常很快，只显示关键信息）
+            elif event == "html_generated":
+                return "✓ HTML页面生成完成"
+            
+            # 其他不重要的事件不显示
+            return ""
+            
+        except Exception as e:
+            # 如果格式化失败，返回原始JSON（保底）
+            return json.dumps({"event": event, "data": data}, ensure_ascii=False)
 
     # ---------------------------
     # Rendering + logs
     # ---------------------------
+    def _update_loading_animation(self) -> None:
+        """更新开始按钮的loading动画"""
+        self._loading_dots = (self._loading_dots + 1) % 4
+        dots = "." * self._loading_dots
+        self.btn_start.setText(f"运行中{dots}")
+    
     def _update_run_buttons(self) -> None:
         running = self._pipeline.is_running()
-        self.btn_start.setEnabled(not running)
+        
+        # 开始按钮：运行中不可点击，显示loading动画
+        if running:
+            self.btn_start.setEnabled(False)
+            if not self._loading_timer.isActive():
+                self._loading_timer.start(500)  # 每500ms更新一次
+        else:
+            self.btn_start.setEnabled(True)
+            self.btn_start.setText(self._original_start_text)
+            if self._loading_timer.isActive():
+                self._loading_timer.stop()
+        
+        # 停止按钮：只有运行中可点击
         self.btn_stop.setEnabled(running)
+        
+        # 菜单项同步
         self._act_start.setEnabled(not running)
         self._act_stop.setEnabled(running)
 
@@ -756,6 +1124,17 @@ class MainWindow(QMainWindow):
         if not line:
             return
         self.log_full.appendPlainText(line)
+        
+        # 有日志后启用"清空"按钮
+        if hasattr(self, 'btn_clear_log') and not self.btn_clear_log.isEnabled():
+            self.btn_clear_log.setEnabled(True)
+    
+    def _clear_log(self) -> None:
+        """清空日志"""
+        self.log_full.setPlainText("")
+        # 清空后禁用按钮
+        if hasattr(self, 'btn_clear_log'):
+            self.btn_clear_log.setEnabled(False)
 
     def _pct(self, done: int, total: int) -> int:
         if total <= 0:
@@ -766,14 +1145,18 @@ class MainWindow(QMainWindow):
         phase = self._state.current_phase or "-"
         self.lbl_phase.setText(f"阶段：{phase}")
 
+        # 列表进度条（基于页数，假设大约200页为100%）
         if self._state.list_page > 0:
-            self.lbl_list.setText(f"列表：页 {self._state.list_page}（累计新增 {self._state.list_new_total}）")
+            list_pct = min(100, int(self._state.list_page * 100 / 200))
+            self.pb_list.setValue(list_pct)
+            self.pb_list.setFormat(f"第 {self._state.list_page} 页 ({self._state.list_new_total} 条)")
         else:
-            self.lbl_list.setText("列表：-")
+            self.pb_list.setValue(0)
+            self.pb_list.setFormat("-")
 
+        # 详情和图片进度条
         self.pb_detail.setValue(self._pct(self._state.detail_done, self._state.detail_total))
         self.pb_media_images.setValue(self._pct(self._state.media_images_done, self._state.media_images_total))
-        self.pb_media_videos.setValue(self._pct(self._state.media_videos_done, self._state.media_videos_total))
     
     def _set_macos_titlebar_color(self) -> None:
         """Set macOS native title bar color to match app background"""
